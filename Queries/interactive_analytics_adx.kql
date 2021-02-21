@@ -1,0 +1,190 @@
+Logs | count
+
+
+//Q1: Count appearance of a common term (case insensitive)
+Logs
+| where Timestamp between(datetime(2014-03-08) .. 12h)
+| where Level == 'Warning' and Message has 'enabled'
+| count
+
+//Q2: Count appearance of rare term (case insensitive) 
+Logs
+| where Level == 'Error'
+| where Message has 'safeArrayRankMismatch'
+| count
+
+//Q3: Advanced text search using contains and starts-with over short time period (case insensitive) 
+Logs
+| where Timestamp between(datetime(2014-03-8 03:00:00) .. 1h) 
+| where Component startswith 'cloud' and Message contains 'PONSE' // (res)ponse
+| summarize Count=count() by Component
+
+//Q4: Full text search across multiple columns, and fetching a sample 
+Logs
+| where Timestamp between(datetime(2014-03-08 03:00:00) .. 1h) 
+| where * has 'Internal'
+| top 1000 by Timestamp
+
+//Q5: find session logs by CIDs
+Logs | where ClientRequestId in (
+'d71ab629-ebaf-9380-5fe8-942541387ce5', 
+'6bb29a30-ce0d-1288-36f0-27dbd57d66b0', 
+'1f82e290-a7c4-ac84-7117-52209b3b9c91', 
+'ecc12181-8c5a-4f87-1ca3-712b4a82c4f0', 
+'d275a6f0-ba1d-22cf-b06b-6dac508ece4b', 
+'f0565381-29db-bf73-ca1b-319e80debe1c', 
+'54807a9a-e442-883f-6d8b-186c1c2a1041', 
+'f1d10647-fc31-dbc3-9e25-67f68a6fe194') 
+| count 
+
+//Q6: Aggregation by a calculated column based on multi-value lookup (case sensitive)
+Logs
+| where Timestamp between(datetime(2014-03-12) .. 10d) 
+| where Source in ('IMAGINEFIRST0', 'HAVINGCOLUMN182', 'THEREFORESTORE156', 'HOSTNODES207')
+| extend LogType = case(Component in ('CLOUDREPORTSERVER', 'COMMON1', 'FABRICINTEGRATOR', 'REQUESTPROTECTION', 'DIRECTORYSERVICE', 'REPORTSERVERSERVICETRACE', 'ACONFIGURATION', 'EXPLORESERVICEWATCHDOG', 'COMMUNICATIONRUNTIME'), 'Security',
+                        Component in ('REPORTNETWORKING', 'PUSHDATASERVICETRACE', 'HEALTHSERVICE', 'UTILS', 'PROVIDERSCOMMON'), 'Performance',
+                        Component in ('WORKERSERVICECONTENT', 'XMLACOMMON', 'INTEGRATIONDATABASE', 'DATABASEMANAGEMENT'), 'Ingestion',
+                        'Other')
+| summarize Count=count() by LogType
+
+//Q7: Extract Exception type and Message from error traces
+Logs
+| where Timestamp between(datetime(2014-03-08 12:00) .. 1h) 
+| where Level=='Error' and  Message startswith 'exception'
+| parse Message with 'Exception=' ExeptionType ';' * 'Message=' ExceptionMessage ';' *  
+| summarize Count=count() by ExeptionType, ExceptionMessage
+| top 10 by Count
+
+//Q8: Aggregation by a single dimension (low cardinality)
+Logs
+| where Timestamp between(datetime(2014-03-08 12:00) .. 6h)
+| summarize Count=count() by Level
+
+//Q9: Aggregation by two dimensions and getting top 50 results
+Logs
+| where Timestamp between(datetime(2014-03-08 12:00) .. 6h)
+| summarize Count=count() by Level, Component
+| top 50 by Count
+
+//Q10: Aggregation by multiple dimensions (including high cardinality column: ClientRequestId)
+Logs
+| where Timestamp between(datetime(2014-03-08) .. 3d) 
+| where Source == 'IMAGINEFIRST0' and Message has 'downloaded'
+| summarize hint.shufflekey=ClientRequestId Count=count() by Component, Level, Node, ClientRequestId
+| top 10 by Count
+
+//Q11: Aggregation over data resulting from sub-query: Resolve nodes that produce most of errors, and drill into their logs distribution per-level.
+let top_nodes = 
+    Logs
+    | where Timestamp between(datetime(2014-03-08 12:00) .. 6h)
+    | where Level == 'Error'
+    | summarize count() by Node
+    | top 10 by count_
+    | project Node;
+Logs
+| where Timestamp between(datetime(2014-03-08 12:00) .. 6h)
+| where Node in (top_nodes)
+| summarize count() by Level, Node
+
+//Q12: Distinct count of sessions that had warning traces over time period of 1h 
+Logs 
+| where Timestamp between(datetime(2014-03-14 12:00) .. 6h) 
+| where Level == 'Error' 
+| summarize dcount(ClientRequestId) by bin(Timestamp, 1h)  
+
+//Q13: Aggregation of dynamic properties: statistics of ingestion per source
+Logs
+| where Timestamp between(datetime(2014-03-12 12:00) .. 6h)
+| where Message startswith 'IngestionCompletionEvent'
+| where Source in ('IMAGINEFIRST0', 'CLIMBSTEADY83', 'INTERNALFIRST79', 'WORKWITHIN77', 'ADOPTIONCUSTOMERS81', 'FIVENEARLY85', 
+                    'WHATABOUT98', 'PUBLICBRAINCHILD89', 'WATCHPREVIEW91', 'LATERYEARS87', 'GUTHRIESSCOTT93', 'THISSTORING16')
+| where Properties has 'parquet'
+| summarize MaxRowCount= max(tolong(Properties.rowCount)), percentiles(totimespan(Properties.duration), 50, 90, 95) by Source
+
+//Q14: Filtering, aggregation and top values based on dynamic column (semi-structured data)
+Logs 
+| where Timestamp between(datetime(2014-03-08 12:00) .. 1h) 
+| where Component == "DOWNLOADER"
+| summarize DownloadRate=max(todouble(Properties.compressedSize) / ((totimespan(Properties.downloadDuration) / 1sec))) by Source
+| top 10 by DownloadRate
+
+//Q15: Find top activities (by CPU consumption) and then get analysis of the nodes performance over buckets of 5min
+let Data = Logs 
+    | where Source == 'IMAGINEFIRST0'
+    | where Timestamp between(datetime(2014-03-08 12:00) .. 5d) 
+    | where Message startswith 'IngestionCompletionEvent'
+    | where totimespan(Properties.cpuTime) < 24h;
+let TopNodesByCPU = Data
+| summarize MaxCPU = max(totimespan(Properties.cpuTime)) by Node 
+| top 10 by MaxCPU 
+| project Node;
+Data
+| where Node in (TopNodesByCPU)
+| summarize AverageProcessTimeInSeconds=avg(totimespan(Properties.cpuTime)) by bin(Timestamp, 5m), Node
+
+//Q16: Top nested: drill into errors with 3 levels: Source (all), Nodes (top 3), and components (top 3 + others) 
+Logs
+| where Timestamp between(datetime(2014-03-08) .. 3d) 
+| where Level == 'Error'
+| where Message has 'ArrayTypeMismatch'
+| where Source in ('IMAGINEFIRST0', 'CLIMBSTEADY83', 'INTERNALFIRST79', 'WORKWITHIN77', 'ADOPTIONCUSTOMERS81', 'FIVENEARLY85', 
+                    'WHATABOUT98', 'PUBLICBRAINCHILD89', 'WATCHPREVIEW91', 'LATERYEARS87', 'GUTHRIESSCOTT93', 'THISSTORING16')
+| top-nested of Source by max(1),
+  top-nested 3 of Node by NodeErrors=count(),
+  top-nested 3 of Component with others = 'Other components' by ComponentErrors=count()
+| project Source, Node, Component, NodeErrors, ComponentErrors
+
+//Q17: find the 10 tables with the top-10 count of ingested rows for a specific Source
+let Data =
+Logs
+| where Timestamp between(datetime(2014-03-08 12:00) .. 3d) 
+| where Source == 'IMAGINEFIRST0';
+Data
+| where Message startswith '$$IngestionCommand' 
+| parse Message with '$$IngestionCommand table=' Table ' ' *
+| distinct hint.shufflekey=ClientRequestId ClientRequestId, Table
+| join kind=inner hint.shufflekey=ClientRequestId (
+    Data
+    | where Message startswith 'IngestionCompletionEvent'
+) on ClientRequestId
+| summarize TotalRows = sum(tolong(Properties.rowCount)) by Table
+| top 10 by TotalRows
+
+//Q18: Aggregation based on the dynamic property, and drill-down in top-10 tables by RowCount 
+let Data =
+Logs
+| where Timestamp between(datetime(2014-03-08 12:00) .. 3d) 
+| where Source == 'IMAGINEFIRST0';
+Data
+| where Message startswith '$$IngestionCommand' 
+| parse Message with '$$IngestionCommand table=' Table ' ' *
+| distinct hint.shufflekey=ClientRequestId ClientRequestId, Table
+| join kind=inner hint.shufflekey=ClientRequestId (
+    Data
+    | where Message startswith 'IngestionCompletionEvent'
+) on ClientRequestId
+| extend Format=tostring(Properties.format), RowCount=tolong(Properties.rowCount)
+| top-nested of Format by max(1),
+  top-nested 10 of Table by Rows=sum(RowCount)
+| project Format, Table, Rows
+
+//Q19: Join on a calculated key: check if there is any file was downloaded and completed by two different acitivites (look for a bug)
+let Data =
+    Logs
+    | where Timestamp between(datetime(2014-03-08 12:00) .. 3d)
+    | where Source == 'IMAGINEFIRST0'
+    ;
+let Downloading = 
+    Data 
+    | where Message startswith 'Downloading file path:'
+    | parse Message with * 'path:' path
+    | project DownloadClientRequestId = ClientRequestId, path;
+let IngestionCompletion = 
+    Data
+    | where Message startswith 'IngestionCompletionEvent' 
+    | parse Message with * 'path:' path
+    | project CompleteClientRequestId = ClientRequestId, path;
+Downloading 
+| join hint.shufflekey=path kind=inner (IngestionCompletion) on path
+| where DownloadClientRequestId !=  CompleteClientRequestId
+| count 
